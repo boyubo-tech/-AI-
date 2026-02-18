@@ -88,3 +88,31 @@
 2. 修改 3 处 `false` 为 `true`
 3. `Ctrl + S` 保存
 4. ✅ 完成！
+   🔄 重启 Windsurf
+设置修改后需要重启才能生效！
+方法 1：完全退出重启 ✅ 推荐
+
+关闭所有 Windsurf 窗口
+重新打开 Windsurf
+
+方法 2：重新加载窗口
+
+按 Ctrl + Shift + P
+输入 reload
+选择 "Developer: Reload Window"（开发人员：重新加载窗口）
+
+
+🔍 或者，检查配置是否保存成功
+
+按 Ctrl + Shift + P
+输入 json
+打开 "Preferences: Open User Settings (JSON)"
+确认这 3 处是 true：
+
+"confirmOnExecute": true
+"confirmOnBatchEdit": true
+"terminal.integrated.confirmOnRun": true
+
+
+
+
