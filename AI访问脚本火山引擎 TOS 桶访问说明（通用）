@@ -1,0 +1,158 @@
+# 火山引擎 TOS 桶访问说明（通用）
+
+> 适用场景：任何需要通过 API / rclone / boto3 / SDK 访问火山引擎对象存储（TOS）的项目。
+
+---
+
+## 一、最关键的一条：TOS 只支持 Virtual-Hosted Style
+
+### 什么意思？
+
+访问 TOS 桶有两种 URL 写法：
+
+| 方式 | URL 格式 | TOS 是否支持 |
+|------|----------|-------------|
+| **Path Style（路径方式）** | `https://tos-s3-cn-guangzhou.volces.com/your-bucket-name/文件` | ❌ 不支持 |
+| **Virtual-Hosted Style（虚拟主机方式）** | `https://your-bucket-name.tos-s3-cn-guangzhou.volces.com/文件` | ✅ 支持 |
+
+**TOS 要求桶名必须作为域名前缀**，不能作为路径的一部分。
+
+### 常见错误
+
+如果你用了 Path Style，TOS 会返回：
+```
+403 InvalidPathAccess: Forbidden path to access server.
+```
+
+---
+
+## 二、rclone 配置（推荐用配置文件方式）
+
+### 错误写法（会导致 403）
+
+```bash
+# 不要用 :s3,... 连接字符串 + force_path_style=true
+rclone lsf ":s3,provider=Other,env_auth=true,force_path_style=true,endpoint=tos-s3-cn-guangzhou.volces.com:your-bucket-name/"
+```
+
+### 正确写法（用临时配置文件）
+
+```bash
+# 1. 生成临时 rclone 配置文件
+RCLONE_CONF=$(mktemp)
+cat > "$RCLONE_CONF" <<EOF
+[tos]
+type = s3
+provider = Other
+access_key_id = ${AWS_ACCESS_KEY_ID}
+secret_access_key = ${AWS_SECRET_ACCESS_KEY}
+region = cn-guangzhou
+endpoint = tos-s3-cn-guangzhou.volces.com
+force_path_style = false
+EOF
+
+# 2. 使用配置文件访问
+rclone lsf "tos:your-bucket-name/backups" --dirs-only --config "$RCLONE_CONF"
+rclone copy /本地文件 "tos:your-bucket-name/backups/目标目录" --config "$RCLONE_CONF"
+
+# 3. 用完删除临时文件
+rm -f "$RCLONE_CONF"
+```
+
+**关键参数**：
+- `force_path_style = false`（必须，默认值就是 false，但要确保没有被覆盖为 true）
+- `provider = Other`（TOS 是 S3 兼容存储，选 Other）
+- `endpoint` 只写域名，不带 `https://`
+
+---
+
+## 三、boto3 / Python SDK 配置
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id="你的AK",
+    aws_secret_access_key="你的SK",
+    region_name="cn-guangzhou",
+    endpoint_url="https://tos-s3-cn-guangzhou.volces.com",
+    # boto3 默认就是 virtual-hosted style，无需额外配置
+)
+
+# 列出桶内对象
+resp = s3.list_objects_v2(Bucket="your-bucket-name", Prefix="backups/")
+```
+
+---
+
+## 四、AccessKey / SecretKey 说明
+
+### AK/SK 从哪里获取
+
+1. 火山控制台 → **IAM → 用户 → 你的子用户 → AccessKey 管理 → 创建 AccessKey**
+2. 创建完成后弹窗会显示 AK 和 SK，**SK 只显示一次，必须立刻复制**
+
+### SK 的正确使用方式
+
+- 控制台弹窗显示的 SK（可能含 `==` 结尾）**直接使用，不需要做任何解码**
+- 如果是从"下载 CSV"文件里复制的 SK，**同样直接使用原文**
+- **不要对 SK 做 Base64 解码**，否则签名会错误，返回 `SignatureDoesNotMatch`
+
+### AK 格式
+
+火山引擎子用户的 AK 以 `AKLT` 开头，长度约 47 个字符，例如：
+```
+AK你的ZkZGE3ZjMwNDhjNGQ0ZmJjMjdjZW
+```
+
+---
+
+## 五、IAM 权限配置
+
+### 最简排障方式（先验证通不通）
+
+给子用户直接绑定系统策略 `TOSFullAccess`（对象存储完全访问权限）：
+
+IAM → 用户 → 你的子用户 → 权限/策略 → 绑定策略 → 搜索 `TOSFullAccess` → 确定
+
+### 最小权限（生产环境推荐）
+
+只给子用户对特定桶特定前缀的读写权限，通过自定义 IAM 策略实现。
+
+---
+
+## 六、各地域 Endpoint 对照
+
+| 地域 | 公网 Endpoint | 内网 Endpoint |
+|------|--------------|--------------|
+| 华南1（广州） | `tos-s3-cn-guangzhou.volces.com` | `tos-s3-cn-guangzhou.ivolces.com` |
+| 华北2（北京） | `tos-s3-cn-beijing.volces.com` | `tos-s3-cn-beijing.ivolces.com` |
+| 华东2（上海） | `tos-s3-cn-shanghai.volces.com` | `tos-s3-cn-shanghai.ivolces.com` |
+
+> **注意**：TOS 没有"开启/关闭公网访问"的开关，访问权限完全由 IAM 策略 + 桶策略控制。
+
+---
+
+## 七、常见报错速查
+
+| 报错 | 含义 | 解决方法 |
+|------|------|---------|
+| `InvalidPathAccess` | 用了 Path Style | 去掉 `force_path_style=true`，改用配置文件方式 |
+| `SignatureDoesNotMatch` | SK 不对 | 检查 SK 是否被解码/截断，用原文 |
+| `AccessDenied` | IAM 权限不足 | 给子用户绑定 `TOSFullAccess` 排障 |
+| `NoSuchBucket` | 桶名/地域/endpoint 不匹配 | 检查桶名和 endpoint 地域是否一致 |
+
+---
+
+## 八、项目配置示例（请替换为你的实际配置）
+
+- **桶名**：`your-bucket-name`
+- **地域**：`cn-guangzhou`（根据你的桶所在地域选择）
+- **Endpoint**：`tos-s3-cn-guangzhou.volces.com`（对应地域的公网域名）
+- **备份前缀**：`backups`
+- **服务器凭证文件**：`/root/.tos_env`
+- **本地凭证文件**：`secrets/tos_keys.txt`（第1行AK，第2行SK原文）
+- **同步脚本**：`deploy/sync_tos_keys.py`
+- **测试脚本**：`deploy/test_tos.py`
+- **备份触发**：`python deploy/backup.py --backup-tos ...`
